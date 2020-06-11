@@ -11,17 +11,26 @@
 
 import numpy as np
 import pyaudio
+import SendKeys
 
 ######################################################################
 # Feel free to play with these numbers. Might want to change NOTE_MIN
 # and NOTE_MAX especially for guitar/bass. Probably want to keep
 # FRAME_SIZE and FRAMES_PER_FFT to be powers of two.
 
-NOTE_MIN = 60       # C4
-NOTE_MAX = 69       # A4
-FSAMP = 22050       # Sampling frequency in Hz
-FRAME_SIZE = 2048   # How many samples per frame?
-FRAMES_PER_FFT = 16 # FFT takes average across how many frames?
+NOTE_MIN = 56       # Ab3
+NOTE_MAX = 65       # F4
+FSAMP = 44100       # Sampling frequency in Hz
+FRAME_SIZE = 1024   # How many samples per frame?
+FRAMES_PER_FFT = 8  # FFT takes average across how many frames?
+
+# Control mappings
+BRAKE = 'b'
+ACCEL = 'a'
+LEFT = 'l'
+RIGHT = 'r'
+UPSHIFT = 'u'
+DOWNSHIFT = 'd'
 
 ######################################################################
 # Derived quantities from constants above. Note that as
@@ -71,12 +80,14 @@ stream.start_stream()
 window = 0.5 * (1 - np.cos(np.linspace(0, 2*np.pi, SAMPLES_PER_FFT, False)))
 
 # Print initial text
-print 'sampling at', FSAMP, 'Hz with max resolution of', FREQ_STEP, 'Hz'
-print
+print('sampling at {} Hz with max resolution of {} Hz'.format(FSAMP, FREQ_STEP))
+
+upshift = False
+downshift = False
 
 # As long as we are getting data:
 while stream.is_active():
-
+    command_str = ""
     # Shift the buffer down and new data in
     buf[:-FRAME_SIZE] = buf[FRAME_SIZE:]
     buf[-FRAME_SIZE:] = np.fromstring(stream.read(FRAME_SIZE), np.int16)
@@ -94,6 +105,30 @@ while stream.is_active():
     # Console output once we have a full buffer
     num_frames += 1
 
-    if num_frames >= FRAMES_PER_FFT:
-        print 'freq: {:7.2f} Hz     note: {:>3s} {:+.2f}'.format(
-            freq, note_name(n0), n-n0)
+    # use max(buf) to noise-gate input so it doesn't send random control signals when you're not playing into the microphone
+    if num_frames >= FRAMES_PER_FFT and max(buf) > 1000:
+        print('freq: {:7.2f} Hz     note: {:>3s} {:+.2f}'.format(freq, note_name(n0), n-n0))
+        if freq < 270:
+            command_str += BRAKE
+            if freq < 230:
+                if not downshift:
+                    command_str += DOWNSHIFT
+                    downshift = True
+            else:
+                downshift = False
+        else:
+            command_str += ACCEL
+            if freq > 310:
+                if not upshift:
+                    command_str += UPSHIFT
+                    upshift = True
+            else:
+                upshift = False
+
+        if    freq < 205 or                  (230 < freq and freq <= 242) or (270 < freq and freq <= 282) or (312 < freq and freq <= 325):
+            command_str += LEFT
+        elif (215 < freq and freq <= 230) or (260 < freq and freq <= 270) or (300 < freq and freq <= 312) or freq > 345:
+            command_str += RIGHT
+        if command_str:
+            SendKeys.SendKeys(command_str + '{ENTER}', pause=0)
+
