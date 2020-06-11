@@ -11,7 +11,7 @@
 
 import numpy as np
 import pyaudio
-import SendKeys
+import pyvjoy
 
 ######################################################################
 # Feel free to play with these numbers. Might want to change NOTE_MIN
@@ -25,12 +25,12 @@ FRAME_SIZE = 1024   # How many samples per frame?
 FRAMES_PER_FFT = 8  # FFT takes average across how many frames?
 
 # Control mappings
-BRAKE = 'b'
-ACCEL = 'a'
-LEFT = 'l'
-RIGHT = 'r'
-UPSHIFT = 'u'
-DOWNSHIFT = 'd'
+j = pyvjoy.VJoyDevice(1)
+ACCEL_AXIS = pyvjoy.HID_USAGE_Y
+BRAKE_AXIS= pyvjoy.HID_USAGE_Z
+STEER_AXIS = pyvjoy.HID_USAGE_X
+UPSHIFT_BUTTON = 1
+DOWNSHIFT_BUTTON = 2
 
 ######################################################################
 # Derived quantities from constants above. Note that as
@@ -87,7 +87,6 @@ downshift = False
 
 # As long as we are getting data:
 while stream.is_active():
-    command_str = ""
     # Shift the buffer down and new data in
     buf[:-FRAME_SIZE] = buf[FRAME_SIZE:]
     buf[-FRAME_SIZE:] = np.fromstring(stream.read(FRAME_SIZE), np.int16)
@@ -106,29 +105,36 @@ while stream.is_active():
     num_frames += 1
 
     # use max(buf) to noise-gate input so it doesn't send random control signals when you're not playing into the microphone
-    if num_frames >= FRAMES_PER_FFT and max(buf) > 1000:
-        print('freq: {:7.2f} Hz     note: {:>3s} {:+.2f}'.format(freq, note_name(n0), n-n0))
-        if freq < 270:
-            command_str += BRAKE
-            if freq < 230:
-                if not downshift:
-                    command_str += DOWNSHIFT
-                    downshift = True
+    if num_frames >= FRAMES_PER_FFT:
+        if max(buf) > 1000:
+            print('freq: {:7.2f} Hz     note: {:>3s} {:+.2f}'.format(freq, note_name(n0), n-n0))
+            if freq < 270:
+                j.set_axis(BRAKE_AXIS, 0xffff)
+                j.set_axis(ACCEL_AXIS, 0x0000)
+                if freq < 230:
+                    if not downshift:
+                        j.set_button(DOWNSHIFT_BUTTON, 1)
+                        downshift = True
+                else:
+                    j.set_button(DOWNSHIFT_BUTTON, 0)
+                    downshift = False
             else:
-                downshift = False
+                j.set_axis(ACCEL_AXIS, 0xffff)
+                j.set_axis(BRAKE_AXIS, 0x0000)
+                if freq > 310:
+                    if not upshift:
+                        j.set_button(UPSHIFT_BUTTON, 1)
+                        upshift = True
+                else:
+                    j.set_button(UPSHIFT_BUTTON, 0)
+                    upshift = False
+
+            if    freq < 205 or                  (230 < freq and freq <= 242) or (270 < freq and freq <= 282) or (312 < freq and freq <= 325):
+                j.set_axis(STEER_AXIS, 0x0000)
+            elif (215 < freq and freq <= 230) or (260 < freq and freq <= 270) or (300 < freq and freq <= 312) or freq > 345:
+                j.set_axis(STEER_AXIS, 0xffff)
+            else:
+                j.set_axis(STEER_AXIS, 0x8000)
         else:
-            command_str += ACCEL
-            if freq > 310:
-                if not upshift:
-                    command_str += UPSHIFT
-                    upshift = True
-            else:
-                upshift = False
-
-        if    freq < 205 or                  (230 < freq and freq <= 242) or (270 < freq and freq <= 282) or (312 < freq and freq <= 325):
-            command_str += LEFT
-        elif (215 < freq and freq <= 230) or (260 < freq and freq <= 270) or (300 < freq and freq <= 312) or freq > 345:
-            command_str += RIGHT
-        if command_str:
-            SendKeys.SendKeys(command_str + '{ENTER}', pause=0)
-
+            j.set_axis(BRAKE_AXIS, 0x0000)
+            j.set_axis(ACCEL_AXIS, 0x0000)
