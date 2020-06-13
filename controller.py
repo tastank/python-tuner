@@ -15,6 +15,7 @@ import pyvjoy
 
 ######################################################################
 # Feel free to play with these numbers. Might want to change NOTE_MIN
+# Feel free to play with these numbers. Might want to change NOTE_MIN
 # and NOTE_MAX especially for guitar/bass. Probably want to keep
 # FRAME_SIZE and FRAMES_PER_FFT to be powers of two.
 
@@ -23,14 +24,16 @@ NOTE_MAX = 65       # F4
 FSAMP = 44100       # Sampling frequency in Hz
 FRAME_SIZE = 1024   # How many samples per frame?
 FRAMES_PER_FFT = 8  # FFT takes average across how many frames?
+NOISE_GATE = 1000   # Noise gate found through experimentation to prevent unwanted control inputs when not playing
 
 # Control mappings
 j = pyvjoy.VJoyDevice(1)
-ACCEL_AXIS = pyvjoy.HID_USAGE_Y
+THROTTLE_AXIS = pyvjoy.HID_USAGE_Y
 BRAKE_AXIS= pyvjoy.HID_USAGE_Z
 STEER_AXIS = pyvjoy.HID_USAGE_X
 UPSHIFT_BUTTON = 1
 DOWNSHIFT_BUTTON = 2
+LIGHTS_BUTTON = 3
 
 ######################################################################
 # Derived quantities from constants above. Note that as
@@ -82,8 +85,57 @@ window = 0.5 * (1 - np.cos(np.linspace(0, 2*np.pi, SAMPLES_PER_FFT, False)))
 # Print initial text
 print('sampling at {} Hz with max resolution of {} Hz'.format(FSAMP, FREQ_STEP))
 
-upshift = False
-downshift = False
+speed = ''
+steer_str = 'straight'
+shift = ''
+
+brake_value = 0x0
+throttle_value = 0x0
+steer_value = 0x8000
+lights_value = 0
+
+BRAKE_INC = 0x1800 # this should make 0 - full brake take about 0.5 second
+THROTTLE_INC = 0x0800 # this should make 0 - full throttle take about 1.0 second
+STEER_INC = 0x0400 # this should make 0 - full steering take about 1.5 second
+
+BRAKE_MAX = 0xffff
+THROTTLE_MAX = 0xffff
+STEER_CENTER = 0x8000
+STEER_MAX = 0xffff
+
+def apply(value, increment, max):
+    value += increment
+    if value > max:
+        value = max
+    return value
+
+def release(value, increment):
+    if value > 0:
+        value -= increment
+        if value < 0:
+            value = 0
+    return value
+
+def center(value, increment, center):
+    if value > center:
+        value -= increment
+        if value < center:
+            value = center
+    if value < center:
+        value += increment
+        if value > center:
+            value = center
+    return value
+
+def steer(value, increment, direction, center, max):
+    if (value - center) * direction < 0: # if we're the other side of center, e.g. wheel is right but we want to steer left
+        direction *= 2
+    value += increment * direction
+    if value > max:
+        value = max
+    if value < 0:
+        value = 0
+    return value
 
 # As long as we are getting data:
 while stream.is_active():
@@ -104,37 +156,73 @@ while stream.is_active():
     # Console output once we have a full buffer
     num_frames += 1
 
-    # use max(buf) to noise-gate input so it doesn't send random control signals when you're not playing into the microphone
-    if num_frames >= FRAMES_PER_FFT:
-        if max(buf) > 1000:
-            print('freq: {:7.2f} Hz     note: {:>3s} {:+.2f}'.format(freq, note_name(n0), n-n0))
-            if freq < 270:
-                j.set_axis(BRAKE_AXIS, 0xffff)
-                j.set_axis(ACCEL_AXIS, 0x0000)
-                if freq < 230:
-                    if not downshift:
-                        j.set_button(DOWNSHIFT_BUTTON, 1)
-                        downshift = True
-                else:
-                    j.set_button(DOWNSHIFT_BUTTON, 0)
-                    downshift = False
-            else:
-                j.set_axis(ACCEL_AXIS, 0xffff)
-                j.set_axis(BRAKE_AXIS, 0x0000)
-                if freq > 310:
-                    if not upshift:
-                        j.set_button(UPSHIFT_BUTTON, 1)
-                        upshift = True
-                else:
-                    j.set_button(UPSHIFT_BUTTON, 0)
-                    upshift = False
 
-            if    freq < 205 or                  (230 < freq and freq <= 242) or (270 < freq and freq <= 282) or (312 < freq and freq <= 325):
-                j.set_axis(STEER_AXIS, 0x0000)
-            elif (215 < freq and freq <= 230) or (260 < freq and freq <= 270) or (300 < freq and freq <= 312) or freq > 345:
-                j.set_axis(STEER_AXIS, 0xffff)
+    if num_frames >= FRAMES_PER_FFT:
+        # use max(buf) to noise-gate input so it doesn't send random control signals when you're not playing into the microphone
+        # An appropriate NOISE_GATE value must be found by experimentation.
+        if max(buf) > NOISE_GATE:
+
+            if freq < 235:
+                if throttle_value > 0:
+                    throttle_value = 0
+                brake_value = apply(brake_value, BRAKE_INC, BRAKE_MAX)
+                speed = 'brake'
+            elif freq < 270:
+                if brake_value > 0:
+                    brake_value = 0
+                throttle_value = apply(throttle_value, THROTTLE_INC, THROTTLE_MAX)
+                speed = 'accel'
             else:
-                j.set_axis(STEER_AXIS, 0x8000)
+                speed = ''
+
+            if freq <= 195:
+                shift = 'down'
+                j.set_button(DOWNSHIFT_BUTTON, 1)
+                j.set_button(UPSHIFT_BUTTON, 0)
+            elif freq > 320:
+                shift = 'up'
+                j.set_button(UPSHIFT_BUTTON, 1)
+                j.set_button(DOWNSHIFT_BUTTON, 0)
+            else:
+                shift = ''
+                j.set_button(UPSHIFT_BUTTON, 0)
+                j.set_button(DOWNSHIFT_BUTTON, 0)
+
+            if   (195 < freq and freq <= 208) or (235 < freq and freq <= 245):
+                steer_value = steer(steer_value, STEER_INC, -1, STEER_CENTER, STEER_MAX)
+                steer_str = 'left'
+            elif (216 < freq and freq <= 232) or (259 < freq and freq <= 270):
+                steer_value = steer(steer_value, STEER_INC, 1, STEER_CENTER, STEER_MAX)
+                steer_str = 'right'
+            else:
+                steer_value = center(steer_value, STEER_INC, STEER_CENTER)
+                steer_str = 'straight'
+
         else:
-            j.set_axis(BRAKE_AXIS, 0x0000)
-            j.set_axis(ACCEL_AXIS, 0x0000)
+            brake_value = release(brake_value, BRAKE_INC)
+            throttle_value = release(throttle_value, THROTTLE_INC)
+            steer_value = center(steer_value, STEER_INC, STEER_CENTER)
+            j.set_button(DOWNSHIFT_BUTTON, 0)
+            j.set_button(UPSHIFT_BUTTON, 0)
+            speed = ''
+            steer_str = ''
+            shift = ''
+
+        # toggle light flash forever
+        lights_value = 1 - lights_value
+        j.set_button(LIGHTS_BUTTON, lights_value)
+
+        j.set_axis(BRAKE_AXIS, brake_value)
+        j.set_axis(THROTTLE_AXIS, throttle_value)
+        j.set_axis(STEER_AXIS, steer_value)
+
+        print('freq: {:7.2f} Hz  {:<9} {:<6} {:<5}'.format(freq, steer_str, speed, shift))
+
+        # c# xxx-195 downshift
+        # d  195-208 brake left
+        # d# 208-216 brake straight
+        # e  220-232 brake right
+        # f  235-245 accel left
+        # f# 245-259 accel straight
+        # g  259-270 accel right
+        # b  325-340 upshift
